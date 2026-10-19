@@ -3,4 +3,4 @@
 from enrichaudit.logic import EnrichAuditLogic, run
 
 __version__ = "0.1.0"
-__all__ = ["EnrichAuditLogic", "run", "__version__"]
+__all__ = ["EnrichAuditLogic", "__version__", "run"]

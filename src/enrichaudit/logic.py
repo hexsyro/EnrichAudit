@@ -120,7 +120,7 @@ class EnrichAuditLogic:
             except Exception:
                 continue
             checked += 1
-            for finding, rule in zip(row_findings, row_rules):
+            for finding, rule in zip(row_findings, row_rules, strict=False):
                 findings.append(finding)
                 rule_counts[rule] = rule_counts.get(rule, 0) + 1
 
@@ -169,7 +169,7 @@ class EnrichAuditLogic:
         if len(rates) >= 8:
             scores = modified_zscores([rate for _, rate in rates])
             hits = 0
-            for (row, rate), score in zip(rates, scores):
+            for (row, rate), score in zip(rates, scores, strict=False):
                 if abs(score) > 3.5:
                     hits += 1
                     if hits <= 5:

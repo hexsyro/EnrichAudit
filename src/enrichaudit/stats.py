@@ -7,6 +7,7 @@ those gates so small uploads don't produce noise findings.
 from __future__ import annotations
 
 import math
+from collections.abc import Sequence
 
 # ---------------------------------------------------------------------------
 # Robust descriptive statistics
@@ -104,9 +105,9 @@ def chi_square_sf(statistic: float, dof: int) -> float:
     return _gamma_q(dof / 2.0, statistic / 2.0)
 
 
-def chi_square_gof(observed: list[float], expected: list[float]) -> tuple[float, int]:
+def chi_square_gof(observed: Sequence[float], expected: Sequence[float]) -> tuple[float, int]:
     """Goodness-of-fit statistic and degrees of freedom."""
-    stat = sum((o - e) ** 2 / e for o, e in zip(observed, expected) if e > 0)
+    stat = sum((o - e) ** 2 / e for o, e in zip(observed, expected, strict=False) if e > 0)
     return stat, max(len(observed) - 1, 1)
 
 
