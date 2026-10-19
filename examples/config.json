@@ -1,0 +1,6 @@
+{
+  "staleness_days": 14,
+  "rate_tolerance": 1.5,
+  "check_sentiment_emotion": true,
+  "as_of": "2026-10-19"
+}

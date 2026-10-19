@@ -1,0 +1,11 @@
+id,post_id,likes,comments,shares,impressions,engagement_rate,sentiment,emotion,enriched_at
+1,p_1001,120,8,4,4000,3.3,positive,joy,2026-10-12
+2,p_1002,340,25,60,5000,8.5,positive,joy,2026-10-12
+3,p_1003,90,3,1,2000,4.7,positive,anger,2026-10-12
+4,p_1004,15,0,0,900,1.6,neutral,neutral,2026-10-12
+5,p_1005,500,12,100,2000,306.0,positive,joy,2026-10-12
+6,p_1006,480,30,90,12000,5.0,negative,joy,2026-09-01
+7,p_1007,60,2,0,1500,4.2,meh,neutral,2026-10-12
+8,p_1008,210,15,8,7000,3.35,positive,joy,2026-10-12
+9,p_1009,75,4,2,2500,3.2,positive,joy,2026-10-12
+10,p_1010,130,9,3,4200,3.45,positive,joy,2026-10-12
