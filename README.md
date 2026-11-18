@@ -63,7 +63,7 @@ enrichaudit examples/sample.csv
 ```
 
 ```
-enrichaudit 0.1.0 — 7 finding(s), 10 row(s) checked
+enrichaudit 0.2.0 — 7 finding(s), 10 row(s) checked
 
   [medium] 3              sentiment
            Sentiment 'positive' contradicts emotion 'anger' (positive vs negative).
@@ -103,7 +103,11 @@ JSONL is one object per line. Column names are matched loosely — `Post ID`,
 | `--rate-tolerance PT` | Allowed gap in percentage points between given and recomputed rate (default 2.0) |
 | `--as-of DATE` | Reference date for staleness; defaults to the latest date in the data |
 | `--no-sentiment-emotion` | Skip the sentiment-vs-emotion contradiction check |
-| `--config FILE` | JSON file with any of the same keys (`staleness_days`, `rate_tolerance`, `check_sentiment_emotion`, `as_of`); explicit flags win |
+| `--profile FILE` | Write a generated JSON column contract to FILE; normal checks still run (also sets `options["profile"]`) |
+| `--results-log FILE` | Append one JSON line per finding to FILE: `timestamp`, `severity`, `rule`, `field`, `record_id`, `message` |
+| `--id-column COLUMN` | Column to use as the record id for conflict detection (default: best-effort `find_id`) |
+| `--conflict-columns COLUMNS` | Comma-separated enrichment columns to compare for conflicts (default `sentiment,emotion,label,category,source`) |
+| `--config FILE` | JSON file with any of the same keys (`staleness_days`, `rate_tolerance`, `check_sentiment_emotion`, `as_of`, `profile`, `results_log`, `id_column`, `conflict_columns`); explicit flags win. Invalid value types exit 2 with a clear error |
 | `--format {table,json,csv,md}` | Output format (default `table`) |
 | `--output FILE` | Write the report to a file instead of stdout |
 | `--fail-on {none,low,medium,high}` | Exit 1 if any finding is at or above this severity |
@@ -120,7 +124,8 @@ read:
 ```json
 {
   "tool": "enrichaudit",
-  "version": "0.1.0",
+  "version": "0.2.0",
+  "result_schema_version": "1.1",
   "status": "success",
   "findings": [
     {
@@ -128,13 +133,32 @@ read:
       "field": "engagement_rate",
       "message": "Engagement rate 306.00% is above 100%, which is impossible.",
       "record_id": "5",
-      "metadata": {"given_rate": 306.0}
+      "metadata": {"given_rate": 306.0, "rule": "impossible_rate"}
     }
   ],
   "warnings": [],
-  "summary": {"checked": 10, "flagged": 5, "rule_counts": {"impossible_rate": 1}}
+  "summary": {
+    "result_schema_version": "1.1",
+    "skipped": false,
+    "skip_reason": null,
+    "checked": 10,
+    "flagged": 1,
+    "flagged_rows": 1,
+    "row_errors": 0,
+    "conflict_count": 0,
+    "rule_counts": {"impossible_rate": 1}
+  }
 }
 ```
+
+`result_schema_version` travels in both the envelope and the summary so
+downstream tools can detect a shape change. `skipped` / `skip_reason` say
+whether the audit actually had anything to check; `status` stays backward
+compatible. `flagged` is the number of **findings**, while `flagged_rows` is
+the number of **distinct record ids** with at least one finding — one bad row
+can produce several findings. `row_errors` counts rows whose audit failed;
+those rows are skipped and reported in `warnings` with up to five example ids,
+never silently dropped.
 
 Every tool in the family emits this shape, so `enrichaudit data.csv -f json >
 findings.json` can be fed straight to WhyChanged or ReadyPack.
@@ -162,6 +186,36 @@ for finding in result.findings:
 `run` takes a list of dicts — the same rows a CSV would give you — and
 returns a `ToolResult` with `findings`, `warnings`, and `summary`.
 
+## Generated contract, ledger, and conflicts
+
+`--profile contract.json` profiles the input while the normal checks still
+run. The JSON contract has one entry per column with a type guess
+(`text` / `number` / `date` / `bool`), non-null `count`, `null_rate` (a fraction
+of all rows), `distinct_count`, and type-specific detail: `min` / `max` /
+`p50` / `p95` for numbers, `freshness.min` / `freshness.max` for dates, and up
+to 10 `top_values` for categorical fields. See
+[examples/enrichment_contract.json](examples/enrichment_contract.json),
+generated from `examples/sample.csv`. Set `options["profile"] = True` in the
+library to get the same object at `summary["profile"]` without writing a file.
+
+`--results-log findings.jsonl` appends one JSON line per finding with a UTC
+`timestamp`, `severity`, `rule`, `field`, `record_id`, and `message`. The rule
+comes from `metadata["rule"]` (or a `check` key) when present, otherwise from
+the finding's field. The same behavior is available as `options["results_log"]`.
+
+Rows sharing a record id are compared across `sentiment`, `emotion`, `label`,
+`category`, and `source` by default. Differing non-empty values produce one
+medium `conflicting_enrichment` finding per id (five examples plus an overflow
+note) and `summary["conflict_count"]` with the full count. Override the id
+with `--id-column` / `id_column` and the columns with `--conflict-columns` /
+`conflict_columns` (a list or comma-separated string). Comparison is
+case-insensitive; empty values are ignored.
+
+Engagement rates are in **percentage points**, not fractions: `to_float("12%")`
+returns `12`, and a 12-point gap is 12. A trailing percent sign is ignored by
+design. With `rate_tolerance > 10`, the tiers are high above
+`max(tolerance, 10)` and medium between `min(tolerance, 10)` and that ceiling.
+
 ## Limitations, honestly
 
 - Staleness thresholds are yours to set. Seven days is a default, not a
@@ -171,9 +225,48 @@ returns a `ToolResult` with `findings`, `warnings`, and `summary`.
   doesn't know; unknown labels are reported, not guessed at.
 - Benford screening says "investigate," not "guilty." Rounded and
   truncated numbers also trip it. It needs 50+ values and stays quiet
-  below that.
+  below that. Up to five eligible columns are tested; the first result stays
+  at `summary["benford"]`, with all of them in `summary["benford_all"]`.
+  Testing several columns means several comparisons, so a warning is emitted
+  and deviations are leads, not verdicts.
 - Column matching is heuristic. If your pipeline renames `likes` to
   `engagements_hearted`, tell it with a rename before the scan.
+
+## [0.2.0] - 2026-11-19
+
+### Added
+
+- Generated column contracts via `build_contract(rows)`, `--profile FILE`, and
+  `summary["profile"]`; a sample contract lives in `examples/`.
+- Append-only check-results ledger via `--results-log FILE` and the
+  `results_log` option, with rule names carried in finding metadata.
+- Golden-record conflict detection with `id_column` and `conflict_columns`,
+  `conflicting_enrichment` findings, and `summary["conflict_count"]`.
+- Result-schema contract fields: `result_schema_version`, `skipped`,
+  `skip_reason`, `flagged_rows`, `row_errors`, `conflict_count`, and
+  `benford_all`. `ToolResult` and `RESULT_SCHEMA_VERSION` are importable from
+  the package root.
+
+### Fixed
+
+- Row-level exceptions are counted and warned about (with up to five example
+  ids) instead of silently shrinking the audited population.
+- Benford screening no longer stops at the first column with 50+ values; it
+  tests up to five and warns about multiple comparisons.
+- The medium rate-mismatch tier is reachable when `rate_tolerance > 10`.
+- `to_float` no longer claims to convert percent signs; rates are percentage
+  points.
+
+### Inspiration
+
+- [DataKitchen's 2026 open-source data quality and observability landscape](https://datakitchen.io/blog/the-2026-open-source-data-quality-and-data-observability-landscape)
+  — coverage is not capability, and profiling can generate the first draft of
+  a test contract.
+- [Data quality tooling compared](https://iceberglakehouse.com/posts/data-quality-tooling-compared)
+  — a `check_results` table, warn severity, the grain of a check, and pruning
+  rules that no longer earn their keep.
+- [HN: Get me out of data hell](https://news.ycombinator.com/item?id=42010249)
+  — silent failures are the real tax on data pipelines.
 
 ## License
 

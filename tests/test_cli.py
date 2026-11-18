@@ -163,4 +163,72 @@ def test_version(capsys):
     with pytest.raises(SystemExit) as exc:
         main(["--version"])
     assert exc.value.code == 0
-    assert "enrichaudit 0.1.0" in capsys.readouterr().out
+    assert "enrichaudit 0.2.0" in capsys.readouterr().out
+
+
+def test_json_envelope_has_result_schema_version(tmp_path, capsys):
+    path = write_csv(tmp_path, CLEAN_CSV)
+    assert main([str(path), "--format", "json"]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["result_schema_version"] == "1.1"
+    assert payload["summary"]["result_schema_version"] == "1.1"
+    assert payload["summary"]["skipped"] is False
+    assert payload["summary"]["skip_reason"] is None
+
+
+@pytest.mark.parametrize(
+    ("config", "key"),
+    [
+        ({"staleness_days": "banana"}, "staleness_days"),
+        ({"rate_tolerance": {}}, "rate_tolerance"),
+        ({"check_sentiment_emotion": "maybe"}, "check_sentiment_emotion"),
+        ({"as_of": ["2026-01-01"]}, "as_of"),
+        ({"profile": "yes please"}, "profile"),
+        ({"results_log": 42}, "results_log"),
+        ({"id_column": {"name": "id"}}, "id_column"),
+        ({"conflict_columns": [1, 2]}, "conflict_columns"),
+    ],
+)
+def test_invalid_config_value_types_exit_2(tmp_path, capsys, config, key):
+    path = write_csv(tmp_path, CLEAN_CSV)
+    cfg = tmp_path / "config.json"
+    cfg.write_text(json.dumps(config), encoding="utf-8")
+    assert main([str(path), "--config", str(cfg)]) == 2
+    err = capsys.readouterr().err
+    assert "invalid value for option" in err
+    assert key in err
+
+
+def test_profile_flag_writes_contract_and_keeps_checks(tmp_path, capsys):
+    path = write_csv(tmp_path, BAD_CSV)
+    profile_path = tmp_path / "contract.json"
+    assert main([str(path), "--profile", str(profile_path), "--format", "json"]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    contract = json.loads(profile_path.read_text(encoding="utf-8"))
+    assert contract == payload["summary"]["profile"]
+    assert contract["row_count"] == 3
+    assert "engagement_rate" in contract["columns"]
+    # Normal checks still ran alongside profiling.
+    assert payload["summary"]["checked"] == 3
+    assert len(payload["findings"]) == 2
+
+
+def test_results_log_flag_appends_json_lines(tmp_path, capsys):
+    path = write_csv(tmp_path, BAD_CSV)
+    log_path = tmp_path / "findings.jsonl"
+    assert main([str(path), "--results-log", str(log_path), "--format", "json"]) == 0
+    capsys.readouterr()
+    lines = [json.loads(line) for line in log_path.read_text(encoding="utf-8").splitlines()]
+    assert len(lines) == 2
+    assert all(set(line) == {"timestamp", "severity", "rule", "field", "record_id", "message"} for line in lines)
+    assert {line["rule"] for line in lines} == {"rate_mismatch", "sentiment_emotion_contradiction"}
+    assert all(line["timestamp"].endswith("Z") for line in lines)
+
+
+def test_conflict_columns_flag(tmp_path, capsys):
+    path = write_csv(tmp_path, "id,category,source\n1,news,alpha\n1,blog,alpha\n")
+    assert main([str(path), "--conflict-columns", "category,source", "--format", "json"]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["summary"]["conflict_count"] == 1
+    assert [f["severity"] for f in payload["findings"]] == ["medium"]
+

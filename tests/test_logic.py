@@ -3,6 +3,8 @@ trigger it, and a clean row that must not."""
 
 from __future__ import annotations
 
+import json
+
 from enrichaudit.logic import EnrichAuditLogic
 
 logic = EnrichAuditLogic()
@@ -211,3 +213,167 @@ def test_row_errors_do_not_crash_the_run():
     result = logic.run(rows, {})
     assert result.summary["checked"] >= 1
     assert result.status == "success"
+
+
+# --- v0.2.0 -----------------------------------------------------------------
+
+
+def test_summary_carries_result_schema_and_skip_state():
+    result = logic.run([{"id": "1", "sentiment": "neutral"}], {})
+    summary = result.summary
+    assert summary["result_schema_version"] == "1.1"
+    assert summary["skipped"] is False
+    assert summary["skip_reason"] is None
+
+    empty = logic.run([], {})
+    assert empty.summary["skipped"] is True
+    assert empty.summary["skip_reason"] is not None
+    assert empty.summary["result_schema_version"] == "1.1"
+
+
+def test_row_errors_are_counted_and_warned(monkeypatch):
+    original = logic._audit_row
+
+    def flaky(row, **kwargs):
+        if row.get("id") == "2":
+            raise RuntimeError("boom")
+        return original(row, **kwargs)
+
+    monkeypatch.setattr(logic, "_audit_row", flaky)
+    rows = [{"id": "1", "engagement_rate": -1}, {"id": "2", "engagement_rate": -1}]
+    result = logic.run(rows, {})
+    assert result.status == "success"
+    assert result.summary["row_errors"] == 1
+    assert result.summary["checked"] == 1
+    assert any("1 row(s) could not be audited" in w and "2" in w for w in result.warnings)
+
+
+def test_all_row_errors_are_marked_skipped(monkeypatch):
+    def broken(row, **kwargs):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(logic, "_audit_row", broken)
+    result = logic.run([{"id": "1"}], {})
+    assert result.summary["skipped"] is True
+    assert result.summary["row_errors"] == 1
+    assert "row_errors" in result.summary["skip_reason"]
+
+
+def test_benford_tests_multiple_columns_with_warning():
+    rows = []
+    for i in range(60):
+        value = 9 * (10 ** (i % 6))
+        rows.append({"id": str(i), "revenue": value, "amount": value})
+    result = logic.run(rows, {})
+    benford_all = result.summary["benford_all"]
+    assert [entry["column"] for entry in benford_all] == ["revenue", "amount"]
+    assert result.summary["benford"] == benford_all[0]
+    assert rules_of(result)["benford_deviation"] == 2
+    assert any("Multiple comparisons" in warning for warning in result.warnings)
+
+
+def test_benford_stops_at_five_columns():
+    columns = ("revenue", "amount", "likes", "impressions", "views", "followers", "clicks")
+    rows = [{column: 9 * (10 ** (i % 6)) for column in columns} for i in range(60)]
+    result = logic.run(rows, {})
+    assert [entry["column"] for entry in result.summary["benford_all"]] == list(columns[:5])
+
+
+def test_rate_tolerance_medium_tier_when_tolerance_exceeds_ten():
+    # Computed 13%, stated 1%: 12pt gap. With a 15pt tolerance this is still
+    # medium (10 < 12 <= 15), not silently clean and not high.
+    medium = logic.run([{"id": "1", "likes": 1300, "impressions": 10000, "engagement_rate": 1}],
+                       {"rate_tolerance": 15})
+    assert medium.findings[0]["severity"] == "medium"
+    assert medium.findings[0]["metadata"]["delta"] == 12.0
+
+    high = logic.run([{"id": "1", "likes": 1700, "impressions": 10000, "engagement_rate": 1}],
+                     {"rate_tolerance": 15})
+    assert high.findings[0]["severity"] == "high"
+
+
+def test_flagged_counts_findings_but_flagged_rows_counts_records():
+    rows = [{"id": "1", "engagement_rate": 150, "sentiment": "positive", "emotion": "anger"}]
+    rows += [{"id": str(i), "revenue": 9 * (10 ** (i % 6))} for i in range(60)]
+    result = logic.run(rows, {})
+    # Two per-row findings for id 1, plus one dataset-level Benford finding.
+    assert result.summary["flagged"] == 3
+    assert result.summary["flagged_rows"] == 1
+
+
+def test_conflicting_enrichment_per_id():
+    rows = [
+        {"id": "1", "sentiment": "positive", "emotion": "joy"},
+        {"id": "1", "sentiment": "negative", "emotion": "joy"},
+        {"id": "2", "sentiment": "positive", "emotion": "joy"},
+        {"id": "2", "sentiment": "positive", "emotion": "anger"},
+        {"id": "3", "sentiment": "", "emotion": "sad"},
+        {"id": "3", "sentiment": "positive", "emotion": "sad"},
+    ]
+    result = logic.run(rows, {"check_sentiment_emotion": False})
+    assert result.summary["conflict_count"] == 2
+    assert rules_of(result) == {"conflicting_enrichment": 2}
+    assert [finding["record_id"] for finding in result.findings] == ["1", "2"]
+    assert all(finding["severity"] == "medium" for finding in result.findings)
+
+
+def test_conflict_respects_id_column_and_conflict_columns():
+    rows = [
+        {"pk": "a", "label": "x", "sentiment": "positive"},
+        {"pk": "a", "label": "y", "sentiment": "positive"},
+    ]
+    without = logic.run(rows, {"check_sentiment_emotion": False})
+    assert without.summary["conflict_count"] == 0
+
+    with_options = logic.run(
+        rows,
+        {"id_column": "pk", "conflict_columns": ["label"], "check_sentiment_emotion": False},
+    )
+    assert with_options.summary["conflict_count"] == 1
+    assert with_options.findings[0]["record_id"] == "a"
+    assert with_options.findings[0]["metadata"]["columns"] == ["label"]
+
+
+def test_conflict_examples_are_capped():
+    rows = []
+    for i in range(7):
+        rows += [{"id": str(i), "label": "a"}, {"id": str(i), "label": "b"}]
+    result = logic.run(rows, {})
+    assert result.summary["conflict_count"] == 7
+    conflicts = [finding for finding in result.findings if finding["metadata"]["rule"] == "conflicting_enrichment"]
+    assert len(conflicts) == 6  # five examples plus one overflow note
+    assert any(finding["metadata"].get("overflow") == 2 for finding in conflicts)
+
+
+def test_profile_is_exposed_when_enabled():
+    rows = [{"id": "1", "likes": 10, "enriched_at": "2026-10-01", "sentiment": "positive"}]
+    profile = logic.run(rows, {"profile": True}).summary["profile"]
+    assert profile["row_count"] == 1
+    assert profile["columns"]["likes"]["type"] == "number"
+    assert profile["columns"]["enriched_at"]["type"] == "date"
+    assert profile["columns"]["sentiment"]["top_values"] == [{"value": "positive", "count": 1}]
+    assert "profile" not in logic.run(rows, {}).summary
+
+
+def test_results_log_option_appends_one_line_per_finding(tmp_path):
+    log = tmp_path / "findings.jsonl"
+    result = logic.run([{"id": "1", "engagement_rate": -1}], {"results_log": str(log)})
+    lines = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
+    assert len(lines) == len(result.findings) == 1
+    assert lines[0]["rule"] == "negative_rate"
+    assert lines[0]["record_id"] == "1"
+
+
+def test_malformed_option_values_never_escape_run():
+    options = {
+        "staleness_days": "nope",
+        "rate_tolerance": {},
+        "check_sentiment_emotion": "maybe",
+        "profile": [],
+        "results_log": 123,
+        "id_column": {},
+        "conflict_columns": 5,
+    }
+    result = logic.run([{"id": "1", "likes": 10, "impressions": 100}], options)
+    assert result.status == "success"
+    assert result.summary["result_schema_version"] == "1.1"

@@ -1,0 +1,168 @@
+{
+  "row_count": 10,
+  "column_count": 10,
+  "columns": {
+    "id": {
+      "type": "number",
+      "count": 10,
+      "null_rate": 0.0,
+      "distinct_count": 10,
+      "min": 1.0,
+      "max": 10.0,
+      "p50": 5.5,
+      "p95": 9.55
+    },
+    "post_id": {
+      "type": "text",
+      "count": 10,
+      "null_rate": 0.0,
+      "distinct_count": 10,
+      "top_values": [
+        {
+          "value": "p_1001",
+          "count": 1
+        },
+        {
+          "value": "p_1002",
+          "count": 1
+        },
+        {
+          "value": "p_1003",
+          "count": 1
+        },
+        {
+          "value": "p_1004",
+          "count": 1
+        },
+        {
+          "value": "p_1005",
+          "count": 1
+        },
+        {
+          "value": "p_1006",
+          "count": 1
+        },
+        {
+          "value": "p_1007",
+          "count": 1
+        },
+        {
+          "value": "p_1008",
+          "count": 1
+        },
+        {
+          "value": "p_1009",
+          "count": 1
+        },
+        {
+          "value": "p_1010",
+          "count": 1
+        }
+      ]
+    },
+    "likes": {
+      "type": "number",
+      "count": 10,
+      "null_rate": 0.0,
+      "distinct_count": 10,
+      "min": 15.0,
+      "max": 500.0,
+      "p50": 125.0,
+      "p95": 491.0
+    },
+    "comments": {
+      "type": "number",
+      "count": 10,
+      "null_rate": 0.0,
+      "distinct_count": 10,
+      "min": 0.0,
+      "max": 30.0,
+      "p50": 8.5,
+      "p95": 27.75
+    },
+    "shares": {
+      "type": "number",
+      "count": 10,
+      "null_rate": 0.0,
+      "distinct_count": 9,
+      "min": 0.0,
+      "max": 100.0,
+      "p50": 3.5,
+      "p95": 95.5
+    },
+    "impressions": {
+      "type": "number",
+      "count": 10,
+      "null_rate": 0.0,
+      "distinct_count": 9,
+      "min": 900.0,
+      "max": 12000.0,
+      "p50": 3250.0,
+      "p95": 9750.0
+    },
+    "engagement_rate": {
+      "type": "number",
+      "count": 10,
+      "null_rate": 0.0,
+      "distinct_count": 10,
+      "min": 1.6,
+      "max": 306.0,
+      "p50": 3.825,
+      "p95": 172.125
+    },
+    "sentiment": {
+      "type": "text",
+      "count": 10,
+      "null_rate": 0.0,
+      "distinct_count": 4,
+      "top_values": [
+        {
+          "value": "positive",
+          "count": 7
+        },
+        {
+          "value": "meh",
+          "count": 1
+        },
+        {
+          "value": "negative",
+          "count": 1
+        },
+        {
+          "value": "neutral",
+          "count": 1
+        }
+      ]
+    },
+    "emotion": {
+      "type": "text",
+      "count": 10,
+      "null_rate": 0.0,
+      "distinct_count": 3,
+      "top_values": [
+        {
+          "value": "joy",
+          "count": 7
+        },
+        {
+          "value": "neutral",
+          "count": 2
+        },
+        {
+          "value": "anger",
+          "count": 1
+        }
+      ]
+    },
+    "enriched_at": {
+      "type": "date",
+      "count": 10,
+      "null_rate": 0.0,
+      "distinct_count": 2,
+      "freshness": {
+        "min": "2026-09-01",
+        "max": "2026-10-12"
+      }
+    }
+  }
+}

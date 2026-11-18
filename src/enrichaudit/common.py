@@ -14,11 +14,13 @@ import io
 import json
 import re
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 
 SEVERITY_RANK = {"low": 1, "medium": 2, "high": 3}
+# Bumped when the shape of ToolResult.summary changes in a way consumers must notice.
+RESULT_SCHEMA_VERSION = "1.1"
 
 
 @dataclass
@@ -70,10 +72,12 @@ def as_str(value: Any) -> str:
 
 
 def to_float(value: Any, default: float | None = None) -> float | None:
-    """Parse a number from a messy cell (percent signs, commas, ``k``/``M`` suffixes).
+    """Parse a number from a messy cell (commas, ``k``/``M``/``b`` suffixes).
 
-    Rejects date-like or ambiguous strings instead of silently grabbing the
-    first number group.
+    A trailing percent sign is *ignored*, not converted: ``"12%"`` parses as
+    ``12.0``. Engagement rates in this tool are therefore expressed in
+    percentage points (0-100), never as fractions (0-1). Rejects date-like or
+    ambiguous strings instead of silently grabbing the first number group.
     """
     if value is None:
         return default
@@ -158,18 +162,124 @@ def as_naive(value: datetime | None) -> datetime | None:
     return value.replace(tzinfo=None) if value.tzinfo is not None else value
 
 
-def opt_float(options: dict, key: str, default: float) -> float:
-    try:
-        return float(options.get(key, default))
-    except (TypeError, ValueError):
-        return default
+def _bad_option(key: str, value: Any, expected: str) -> ValueError:
+    return ValueError(
+        f"invalid value for option '{key}': expected {expected}, "
+        f"got {type(value).__name__} ({value!r})"
+    )
 
 
-def opt_int(options: dict, key: str, default: int) -> int:
-    try:
-        return int(options.get(key, default))
-    except (TypeError, ValueError):
+def opt_float(options: dict, key: str, default: float, *, strict: bool = False) -> float:
+    """Coerce an option to float. ``strict=True`` raises instead of falling back."""
+    if key not in options:
         return default
+    value = options[key]
+    if isinstance(value, bool):
+        if strict:
+            raise _bad_option(key, value, "number")
+        return default
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        try:
+            return float(value.strip())
+        except ValueError:
+            pass
+    if strict:
+        raise _bad_option(key, value, "number")
+    return default
+
+
+def opt_int(options: dict, key: str, default: int, *, strict: bool = False) -> int:
+    """Coerce an option to int. ``strict=True`` raises instead of falling back."""
+    if key not in options:
+        return default
+    value = options[key]
+    if isinstance(value, bool):
+        if strict:
+            raise _bad_option(key, value, "integer")
+        return default
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str):
+        try:
+            return int(value.strip())
+        except ValueError:
+            pass
+    if strict:
+        raise _bad_option(key, value, "integer")
+    return default
+
+
+def opt_bool(options: dict, key: str, default: bool, *, strict: bool = False) -> bool:
+    """Coerce an option to bool. ``strict=True`` raises instead of falling back."""
+    if key not in options:
+        return default
+    value = options[key]
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, int) and value in (0, 1):
+        return bool(value)
+    if isinstance(value, str):
+        text = value.strip().lower()
+        if text in {"true", "yes", "1", "on"}:
+            return True
+        if text in {"false", "no", "0", "off"}:
+            return False
+    if strict:
+        raise _bad_option(key, value, "boolean")
+    return default
+
+
+def opt_str(options: dict, key: str, default: str | None = None, *, strict: bool = False) -> str | None:
+    """Coerce an option to a string. ``strict=True`` raises instead of falling back."""
+    if key not in options:
+        return default
+    value = options[key]
+    if value is None:
+        return None
+    if isinstance(value, (str, Path, date)):
+        return str(value)
+    if strict:
+        raise _bad_option(key, value, "string")
+    return default
+
+
+def opt_str_list(options: dict, key: str, default: list[str], *, strict: bool = False) -> list[str]:
+    """Coerce an option to a list of strings (a comma-separated string is accepted)."""
+    if key not in options:
+        return list(default)
+    value = options[key]
+    if isinstance(value, str):
+        parts = [part.strip() for part in value.split(",")]
+        return [part for part in parts if part] or list(default)
+    if isinstance(value, (list, tuple)) and all(isinstance(part, str) for part in value):
+        return list(value)
+    if strict:
+        raise _bad_option(key, value, "list of strings (or comma-separated string)")
+    return list(default)
+
+
+def validate_options(options: dict) -> None:
+    """Raise ``ValueError`` with a clear message if a known option has a bad type.
+
+    ``run`` uses the permissive ``opt_*`` coercions so malformed values never
+    escape as exceptions; the CLI calls this first so a bad config exits 2 with
+    an actionable message instead of silently using a default.
+    """
+    specs: list[tuple[str, Any, Any]] = [
+        ("staleness_days", opt_int, 7),
+        ("rate_tolerance", opt_float, 2.0),
+        ("check_sentiment_emotion", opt_bool, True),
+        ("as_of", opt_str, None),
+        ("profile", opt_bool, False),
+        ("results_log", opt_str, None),
+        ("id_column", opt_str, None),
+        ("conflict_columns", opt_str_list, []),
+    ]
+    for key, helper, default in specs:
+        if key in options and options[key] is not None:
+            helper(options, key, default, strict=True)
 
 
 # ---------------------------------------------------------------------------

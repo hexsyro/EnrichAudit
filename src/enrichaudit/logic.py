@@ -15,17 +15,27 @@ from __future__ import annotations
 from typing import Any
 
 from enrichaudit.common import (
+    RESULT_SCHEMA_VERSION,
     ToolResult,
     as_naive,
     as_str,
     find_id,
     get,
+    opt_bool,
     opt_float,
     opt_int,
+    opt_str,
+    opt_str_list,
     parse_date,
     to_float,
 )
+from enrichaudit.ledger import append_results_log
+from enrichaudit.profile import build_contract
 from enrichaudit.stats import benford_chi_square, chi_square_sf, modified_zscores
+
+DEFAULT_CONFLICT_COLUMNS = ["sentiment", "emotion", "label", "category", "source"]
+MAX_EXAMPLES = 5
+MAX_BENFORD_COLUMNS = 5
 
 POSITIVE_LABELS = {"positive", "pos", "1", "1.0", "liked", "love"}
 NEGATIVE_LABELS = {"negative", "neg", "-1", "-1.0", "hated", "dislike"}
@@ -94,19 +104,34 @@ def _resolve_engagement_fields(row: dict) -> tuple[list[float], float | None, fl
     return engagements, base, given_rate
 
 
+def _row_id(row: dict, id_column: str | None = None) -> str | None:
+    """Best-effort id, optionally from an explicit column, never raising."""
+    try:
+        value = get(row, [id_column]) if id_column else find_id(row)
+        return as_str(value) or None
+    except Exception:
+        return None
+
+
 class EnrichAuditLogic:
     """Rule engine for EnrichAudit."""
 
     def run(self, rows: list[dict], options: dict[str, Any]) -> ToolResult:
         staleness_days = max(0, opt_int(options, "staleness_days", 7))
         rate_tolerance = max(0.0, opt_float(options, "rate_tolerance", 2.0))
-        check_emotion = bool(options.get("check_sentiment_emotion", True))
+        check_emotion = opt_bool(options, "check_sentiment_emotion", True)
+        include_profile = opt_bool(options, "profile", False)
+        results_log = opt_str(options, "results_log", None)
+        id_column = opt_str(options, "id_column", None)
+        conflict_columns = opt_str_list(options, "conflict_columns", DEFAULT_CONFLICT_COLUMNS)
 
         reference = self._reference_date(rows, options)
         findings: list[dict] = []
         warnings: list[str] = []
         rule_counts: dict[str, int] = {}
         checked = 0
+        row_error_ids: list[str] = []
+        checked_rows: list[dict] = []
 
         for row in rows:
             try:
@@ -118,44 +143,79 @@ class EnrichAuditLogic:
                     reference=reference,
                 )
             except Exception:
+                row_error_ids.append(_row_id(row) or "<unknown>")
                 continue
             checked += 1
+            checked_rows.append(row)
             for finding, rule in zip(row_findings, row_rules, strict=False):
+                finding.setdefault("metadata", {})["rule"] = rule
                 findings.append(finding)
                 rule_counts[rule] = rule_counts.get(rule, 0) + 1
 
-        if checked == 0:
-            warnings.append(
-                "No rows carried the fields EnrichAudit checks "
-                "(engagement metrics, enrichment dates, sentiment/emotion labels)."
-            )
-
-        distribution, benford_info = self._distribution_checks(rows, findings)
+        distribution, benford_all = self._distribution_checks(checked_rows, findings, warnings)
         rule_counts.update(distribution)
 
+        conflict_count = self._conflict_checks(rows, findings, id_column, conflict_columns)
+        if conflict_count:
+            rule_counts["conflicting_enrichment"] = conflict_count
+
+        if row_error_ids:
+            examples = ", ".join(row_error_ids[:MAX_EXAMPLES])
+            warnings.append(
+                f"{len(row_error_ids)} row(s) could not be audited (examples: {examples}). "
+                "Those rows were skipped; this is a data-shape problem, not a clean result."
+            )
+
+        skipped = checked == 0
+        skip_reason: str | None = None
+        if skipped:
+            skip_reason = (
+                "No rows could be audited; see row_errors."
+                if row_error_ids
+                else "No rows carried the fields EnrichAudit checks "
+                "(engagement metrics, enrichment dates, sentiment/emotion labels)."
+            )
+            warnings.append(skip_reason)
+
         summary: dict[str, Any] = {
+            "result_schema_version": RESULT_SCHEMA_VERSION,
+            "skipped": skipped,
+            "skip_reason": skip_reason,
             "checked": checked,
+            # `flagged` counts findings (historical meaning); `flagged_rows`
+            # counts distinct record ids, i.e. the human notion of bad rows.
             "flagged": len(findings),
+            "flagged_rows": len({f["record_id"] for f in findings if f.get("record_id")}),
+            "row_errors": len(row_error_ids),
+            "conflict_count": conflict_count,
             "rule_counts": rule_counts,
         }
-        if benford_info is not None:
-            summary["benford"] = benford_info
+        if benford_all:
+            summary["benford"] = benford_all[0]  # backward compatible
+            summary["benford_all"] = benford_all
         if reference:
             summary["reference_date"] = reference.date().isoformat()
-        return ToolResult(
-            status="success",
-            findings=findings,
-            warnings=warnings,
-            summary=summary,
-        )
+        if include_profile:
+            try:
+                summary["profile"] = build_contract(rows)
+            except Exception as exc:  # profiling must never sink an audit
+                warnings.append(f"Could not build profile: {exc}")
+        if results_log:
+            try:
+                append_results_log(findings, results_log)
+            except (OSError, TypeError, ValueError) as exc:
+                warnings.append(f"Could not write results log '{results_log}': {exc}")
+
+        return ToolResult(status="success", findings=findings, warnings=warnings, summary=summary)
 
     def _distribution_checks(
-        self, rows: list[dict], findings: list[dict]
-    ) -> tuple[dict[str, int], dict | None]:
+        self, rows: list[dict], findings: list[dict], warnings: list[str]
+    ) -> tuple[dict[str, int], list[dict]]:
         """Dataset-level forensics: MAD outliers + Benford screening.
 
         Both need real sample sizes (8+ / 50+ rows), so small uploads only ever
-        see the per-row rules.
+        see the per-row rules. Benford tests up to five eligible columns; the
+        first result stays at ``summary['benford']`` for backward compat.
         """
         counts: dict[str, int] = {}
 
@@ -163,7 +223,10 @@ class EnrichAuditLogic:
         # on skewed distributions).
         rates: list[tuple[dict, float]] = []
         for row in rows:
-            engagements, base, _given = _resolve_engagement_fields(row)
+            try:
+                engagements, base, _given = _resolve_engagement_fields(row)
+            except Exception:
+                continue
             if base and base > 0 and engagements:
                 rates.append((row, sum(engagements) / base * 100.0))
         if len(rates) >= 8:
@@ -172,40 +235,48 @@ class EnrichAuditLogic:
             for (row, rate), score in zip(rates, scores, strict=False):
                 if abs(score) > 3.5:
                     hits += 1
-                    if hits <= 5:
+                    if hits <= MAX_EXAMPLES:
                         findings.append(
                             self._finding(
                                 "medium",
                                 "engagement_rate",
                                 f"Engagement outlier: {rate:.2f}% deviates from the dataset "
                                 f"distribution (modified z-score {score:+.1f}).",
-                                find_id(row),
-                                {"computed_rate": round(rate, 2), "modified_z": round(score, 2)},
+                                _row_id(row),
+                                {
+                                    "rule": "engagement_outlier",
+                                    "computed_rate": round(rate, 2),
+                                    "modified_z": round(score, 2),
+                                },
                             )
                         )
             if hits:
                 counts["engagement_outlier"] = hits
-                if hits > 5:
+                if hits > MAX_EXAMPLES:
                     findings.append(
                         self._finding(
                             "medium",
                             "engagement_rate",
-                            f"... and {hits - 5} more engagement outliers.",
+                            f"... and {hits - MAX_EXAMPLES} more engagement outliers.",
                             None,
-                            {"overflow": hits - 5},
+                            {"rule": "engagement_outlier", "overflow": hits - MAX_EXAMPLES},
                         )
                     )
 
         # Benford's-law screening for fabricated money/count metrics.
-        benford_result = None
+        benford_all: list[dict] = []
         for key in ("revenue", "amount", "likes", "impressions", "views", "followers", "clicks"):
-            values = [v for v in (to_float(get(r, [key])) for r in rows) if v is not None]
+            try:
+                values = [v for v in (to_float(get(r, [key])) for r in rows) if v is not None]
+            except Exception:
+                continue
             tested = benford_chi_square(values)
             if tested is None:
                 continue
             stat, dof, n = tested
             p_value = chi_square_sf(stat, dof)
-            benford_result = {"column": key, "n": n, "chi2": round(stat, 2), "p": round(p_value, 4)}
+            result = {"column": key, "n": n, "chi2": round(stat, 2), "p": round(p_value, 4)}
+            benford_all.append(result)
             if p_value < 0.01:
                 findings.append(
                     self._finding(
@@ -215,12 +286,70 @@ class EnrichAuditLogic:
                         f"(chi2={stat:.1f}, p={p_value:.4f}, n={n}) — possible fabricated "
                         "or heavily rounded numbers. Investigate, don't conclude.",
                         None,
-                        {"check": "benford", **benford_result},
+                        {"rule": "benford_deviation", "check": "benford", **result},
                     )
                 )
-                counts["benford_deviation"] = 1
-            break
-        return counts, benford_result
+                counts["benford_deviation"] = counts.get("benford_deviation", 0) + 1
+            if len(benford_all) >= MAX_BENFORD_COLUMNS:
+                break
+        if len(benford_all) > 1:
+            warnings.append(
+                f"Benford screening tested {len(benford_all)} columns. Multiple comparisons "
+                "raise the false-positive rate; treat each deviation as a lead to investigate, "
+                "not a conclusion."
+            )
+        return counts, benford_all
+
+    def _conflict_checks(
+        self,
+        rows: list[dict],
+        findings: list[dict],
+        id_column: str | None,
+        conflict_columns: list[str],
+    ) -> int:
+        """One medium finding per id whose enrichment labels disagree."""
+        grouped: dict[str, dict[str, set[str]]] = {}
+        for row in rows:
+            record_id = _row_id(row, id_column)
+            if not record_id:
+                continue
+            for column in conflict_columns:
+                try:
+                    text = as_str(get(row, [column])).strip()
+                except Exception:
+                    continue
+                if text:
+                    grouped.setdefault(record_id, {}).setdefault(column, set()).add(text.lower())
+
+        conflicting: list[tuple[str, dict[str, set[str]]]] = []
+        for record_id, values in grouped.items():
+            differing = {column: seen for column, seen in values.items() if len(seen) > 1}
+            if differing:
+                conflicting.append((record_id, differing))
+
+        for record_id, differing in conflicting[:MAX_EXAMPLES]:
+            fields = ", ".join(sorted(differing))
+            findings.append(
+                self._finding(
+                    "medium",
+                    "enrichment",
+                    f"Conflicting enrichment for record {record_id}: differing values in {fields}.",
+                    record_id,
+                    {"rule": "conflicting_enrichment", "columns": sorted(differing)},
+                )
+            )
+        if len(conflicting) > MAX_EXAMPLES:
+            overflow = len(conflicting) - MAX_EXAMPLES
+            findings.append(
+                self._finding(
+                    "medium",
+                    "enrichment",
+                    f"... and {overflow} more conflicting enrichment records.",
+                    None,
+                    {"rule": "conflicting_enrichment", "overflow": overflow},
+                )
+            )
+        return len(conflicting)
 
     def _reference_date(self, rows: list[dict], options: dict[str, Any]) -> Any:
         as_of = as_naive(parse_date(options.get("as_of")))
@@ -229,7 +358,11 @@ class EnrichAuditLogic:
         latest = None
         for row in rows:
             for key in ("enriched_at", "last_refreshed", "refreshed_at", "fetched_at", "updated_at"):
-                parsed = as_naive(parse_date(get(row, [key])))
+                try:
+                    raw = get(row, [key])
+                except Exception:
+                    continue
+                parsed = as_naive(parse_date(raw))
                 if parsed and (latest is None or parsed > latest):
                     latest = parsed
         return latest
@@ -282,6 +415,7 @@ class EnrichAuditLogic:
                     "computed_rate": round(computed, 2),
                     "delta": round(diff, 2),
                 }
+                medium_tier = min(rate_tolerance, 10.0)
                 if diff > max(rate_tolerance, 10.0):
                     findings.append(
                         self._finding(
@@ -294,13 +428,13 @@ class EnrichAuditLogic:
                         )
                     )
                     rules.append("rate_mismatch")
-                elif diff > rate_tolerance:
+                elif diff > medium_tier:
                     findings.append(
                         self._finding(
                             "medium",
                             "engagement_rate",
                             f"Engagement rate {given_rate:.2f}% differs from the computed {computed:.2f}% "
-                            f"by more than the {rate_tolerance:g}pt tolerance.",
+                            f"by more than the {medium_tier:g}pt medium tier.",
                             record_id,
                             meta,
                         )

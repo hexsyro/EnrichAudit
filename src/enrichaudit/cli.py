@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any
 
 from enrichaudit import __version__
-from enrichaudit.common import SEVERITY_RANK, load_rows
+from enrichaudit.common import SEVERITY_RANK, load_rows, validate_options
 from enrichaudit.logic import EnrichAuditLogic
 from enrichaudit.output import render, worst_severity
 
@@ -66,6 +66,26 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="skip the sentiment-vs-emotion contradiction check",
     )
+    parser.add_argument(
+        "--profile",
+        metavar="FILE",
+        help="write a generated JSON column contract to FILE; normal checks still run",
+    )
+    parser.add_argument(
+        "--results-log",
+        metavar="FILE",
+        help="append one JSON line per finding to FILE (check-results ledger)",
+    )
+    parser.add_argument(
+        "--id-column",
+        metavar="COLUMN",
+        help="column to use as record id for conflict detection (default: best-effort id)",
+    )
+    parser.add_argument(
+        "--conflict-columns",
+        metavar="COLUMNS",
+        help="comma-separated enrichment columns to compare for conflicts",
+    )
     parser.add_argument("--version", action="version", version=f"{TOOL} {__version__}")
     return parser
 
@@ -86,6 +106,15 @@ def _merge_options(args: argparse.Namespace) -> dict[str, Any]:
         options["as_of"] = args.as_of
     if args.no_sentiment_emotion:
         options["check_sentiment_emotion"] = False
+    if args.profile:
+        options["profile"] = True
+    if args.results_log is not None:
+        options["results_log"] = args.results_log
+    if args.id_column is not None:
+        options["id_column"] = args.id_column
+    if args.conflict_columns is not None:
+        options["conflict_columns"] = args.conflict_columns
+    validate_options(options)
     return options
 
 
@@ -109,6 +138,20 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     result = EnrichAuditLogic().run(rows, options)
+
+    if args.profile:
+        contract = result.summary.get("profile")
+        if contract is None:
+            print(f"{TOOL}: profile was not generated", file=sys.stderr)
+            return 2
+        try:
+            Path(args.profile).write_text(
+                json.dumps(contract, indent=2, ensure_ascii=False), encoding="utf-8"
+            )
+        except (OSError, TypeError, ValueError) as exc:
+            print(f"{TOOL}: could not write profile: {exc}", file=sys.stderr)
+            return 2
+
     text = render(result, args.format, tool=TOOL, version=__version__)
 
     if args.output:

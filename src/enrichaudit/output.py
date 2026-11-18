@@ -7,7 +7,7 @@ import io
 import json
 import textwrap
 
-from enrichaudit.common import SEVERITY_RANK, ToolResult
+from enrichaudit.common import RESULT_SCHEMA_VERSION, SEVERITY_RANK, ToolResult
 
 
 def render(result: ToolResult, fmt: str, *, tool: str, version: str) -> str:
@@ -37,6 +37,7 @@ def _json(result: ToolResult, tool: str, version: str) -> str:
     envelope = {
         "tool": tool,
         "version": version,
+        "result_schema_version": RESULT_SCHEMA_VERSION,
         "status": result.status,
         "findings": result.findings,
         "warnings": result.warnings,
