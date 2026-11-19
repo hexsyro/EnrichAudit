@@ -145,9 +145,7 @@ def main(argv: list[str] | None = None) -> int:
             print(f"{TOOL}: profile was not generated", file=sys.stderr)
             return 2
         try:
-            Path(args.profile).write_text(
-                json.dumps(contract, indent=2, ensure_ascii=False), encoding="utf-8"
-            )
+            Path(args.profile).write_text(json.dumps(contract, indent=2, ensure_ascii=False), encoding="utf-8")
         except (OSError, TypeError, ValueError) as exc:
             print(f"{TOOL}: could not write profile: {exc}", file=sys.stderr)
             return 2

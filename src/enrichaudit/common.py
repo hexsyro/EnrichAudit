@@ -163,10 +163,7 @@ def as_naive(value: datetime | None) -> datetime | None:
 
 
 def _bad_option(key: str, value: Any, expected: str) -> ValueError:
-    return ValueError(
-        f"invalid value for option '{key}': expected {expected}, "
-        f"got {type(value).__name__} ({value!r})"
-    )
+    return ValueError(f"invalid value for option '{key}': expected {expected}, got {type(value).__name__} ({value!r})")
 
 
 def opt_float(options: dict, key: str, default: float, *, strict: bool = False) -> float:

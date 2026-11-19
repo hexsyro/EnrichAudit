@@ -445,8 +445,7 @@ class EnrichAuditLogic:
                 self._finding(
                     "high",
                     "engagement_rate",
-                    f"Computed engagement rate {computed:.2f}% exceeds 100% "
-                    f"({total:g} engagements over {base:g}).",
+                    f"Computed engagement rate {computed:.2f}% exceeds 100% ({total:g} engagements over {base:g}).",
                     record_id,
                     {"computed_rate": round(computed, 2)},
                 )
@@ -464,8 +463,7 @@ class EnrichAuditLogic:
                         self._finding(
                             severity,
                             date_field,
-                            f"Enrichment field '{date_field}' is {age_days} days stale "
-                            f"(threshold {staleness_days}).",
+                            f"Enrichment field '{date_field}' is {age_days} days stale (threshold {staleness_days}).",
                             record_id,
                             {"age_days": age_days, "threshold_days": staleness_days},
                         )
@@ -539,9 +537,7 @@ class EnrichAuditLogic:
         return "enriched_at", None
 
     @staticmethod
-    def _finding(
-        severity: str, field: str, message: str, record_id: str | None, metadata: dict
-    ) -> dict:
+    def _finding(severity: str, field: str, message: str, record_id: str | None, metadata: dict) -> dict:
         return {
             "severity": severity,
             "field": field,

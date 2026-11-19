@@ -68,7 +68,7 @@ def test_stale_field_low_then_medium():
     ]
     result = logic.run(rows, {"as_of": "2026-01-10", "staleness_days": 7})
     by_id = {f["record_id"]: f for f in result.findings}
-    assert by_id["1"]["severity"] == "low"   # 9 days: past threshold, not past 2x
+    assert by_id["1"]["severity"] == "low"  # 9 days: past threshold, not past 2x
     assert by_id["2"]["severity"] == "medium"  # 40 days: past 2x threshold
     assert rules_of(result) == {"stale_field": 2}
 
@@ -143,13 +143,11 @@ def test_k_suffix_parsed():
 
 
 def test_mad_engagement_outlier():
-    rows = [
-        {"id": str(i), "likes": 100, "impressions": 1000} for i in range(7)
-    ] + [{"id": "outlier", "likes": 900, "impressions": 1000}]
-    result = logic.run(rows, {})
-    outlier_findings = [
-        f for f in result.findings if f["metadata"].get("modified_z") is not None
+    rows = [{"id": str(i), "likes": 100, "impressions": 1000} for i in range(7)] + [
+        {"id": "outlier", "likes": 900, "impressions": 1000}
     ]
+    result = logic.run(rows, {})
+    outlier_findings = [f for f in result.findings if f["metadata"].get("modified_z") is not None]
     assert len(outlier_findings) == 1
     assert outlier_findings[0]["record_id"] == "outlier"
     assert outlier_findings[0]["severity"] == "medium"
@@ -282,13 +280,11 @@ def test_benford_stops_at_five_columns():
 def test_rate_tolerance_medium_tier_when_tolerance_exceeds_ten():
     # Computed 13%, stated 1%: 12pt gap. With a 15pt tolerance this is still
     # medium (10 < 12 <= 15), not silently clean and not high.
-    medium = logic.run([{"id": "1", "likes": 1300, "impressions": 10000, "engagement_rate": 1}],
-                       {"rate_tolerance": 15})
+    medium = logic.run([{"id": "1", "likes": 1300, "impressions": 10000, "engagement_rate": 1}], {"rate_tolerance": 15})
     assert medium.findings[0]["severity"] == "medium"
     assert medium.findings[0]["metadata"]["delta"] == 12.0
 
-    high = logic.run([{"id": "1", "likes": 1700, "impressions": 10000, "engagement_rate": 1}],
-                     {"rate_tolerance": 15})
+    high = logic.run([{"id": "1", "likes": 1700, "impressions": 10000, "engagement_rate": 1}], {"rate_tolerance": 15})
     assert high.findings[0]["severity"] == "high"
 
 

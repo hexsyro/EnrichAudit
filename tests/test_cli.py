@@ -79,10 +79,7 @@ def test_fail_on_high_trips_on_bad_row(tmp_path, capsys):
 
 def test_fail_on_high_passes_on_medium_only(tmp_path, capsys):
     # Row 2's mismatch: given 13 vs computed 10 -> medium, not high.
-    content = (
-        "id,likes,impressions,engagement_rate\n"
-        "1,100,1000,13\n"
-    )
+    content = "id,likes,impressions,engagement_rate\n1,100,1000,13\n"
     path = write_csv(tmp_path, content)
     assert main([str(path), "--fail-on", "high"]) == 0
     assert main([str(path), "--fail-on", "medium"]) == 1
@@ -146,8 +143,10 @@ def test_cli_flag_overrides_config(tmp_path, capsys):
     path.write_text("id,sentiment,enriched_at\n1,positive,2026-01-01\n", encoding="utf-8")
     config = tmp_path / "config.json"
     config.write_text(json.dumps({"staleness_days": 100}), encoding="utf-8")
-    assert main([str(path), "--config", str(config), "--staleness-days", "1", "--as-of", "2026-02-01",
-                 "--format", "json"]) == 0
+    assert (
+        main([str(path), "--config", str(config), "--staleness-days", "1", "--as-of", "2026-02-01", "--format", "json"])
+        == 0
+    )
     payload = json.loads(capsys.readouterr().out)
     assert payload["summary"]["rule_counts"] == {"stale_field": 1}
 
@@ -231,4 +230,3 @@ def test_conflict_columns_flag(tmp_path, capsys):
     payload = json.loads(capsys.readouterr().out)
     assert payload["summary"]["conflict_count"] == 1
     assert [f["severity"] for f in payload["findings"]] == ["medium"]
-
